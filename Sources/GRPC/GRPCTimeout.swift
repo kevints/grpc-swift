@@ -27,14 +27,20 @@ public enum GRPCTimeoutError: String, Error {
 public struct GRPCTimeout: CustomStringConvertible, Equatable {
   public static let `default`: GRPCTimeout = try! .minutes(1)
   /// Creates an infinite timeout. This is a sentinel value which must __not__ be sent to a gRPC service.
-  public static let infinite: GRPCTimeout = GRPCTimeout(nanoseconds: Int64.max, description: "infinite")
+  public static let infinite: GRPCTimeout = .init(nanoseconds: .max, description: "infinite")
+
+  public static let distantFuture: GRPCTimeout = .init(nanoseconds: .max)
 
   /// A description of the timeout in the format described in the
   /// [gRPC protocol](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md).
-  public let description: String
+  ///
+  public var description: String {
+    return encodeTimeout(timeoutInMillis: nanoseconds / 1000)
+  }
+
   public let nanoseconds: Int64
 
-  private init(nanoseconds: Int64, description: String) {
+  private init(nanoseconds: Int64) {
     self.nanoseconds = nanoseconds
     self.description = description
   }
@@ -121,7 +127,7 @@ public struct GRPCTimeout: CustomStringConvertible, Equatable {
 extension GRPCTimeout {
   /// Returns a NIO `TimeAmount` representing the amount of time as this timeout.
   public var asNIOTimeAmount: TimeAmount {
-    return TimeAmount.nanoseconds(numericCast(nanoseconds))
+    return TimeAmount.nanoseconds(nanoseconds)
   }
 }
 
@@ -154,4 +160,88 @@ private enum GRPCTimeoutUnit: String {
       return 1
     }
   }
+}
+
+private func roundUp(_ x: Int64, divisor: Int64) -> Int64 {
+    let z = x.quotientAndRemainder(dividingBy: divisor)
+    return (x / divisor + ((x % divisor != 0 ? 1 : 0))) * divisor
+}
+
+/* round an integer up to the next value with three significant figures */
+private func roundUpToThreeSigFigs(_ x: Int64) -> Int64 {
+    if x < 1_000 {
+        return x
+    }
+
+    if x < 10_000 {
+        return roundUp(x, divisor: 10)
+    }
+
+    if x < 100_000 {
+        return roundUp(x, divisor: 100)
+    }
+
+    if x < 1_000_000 {
+        return roundUp(x, divisor: 1_000)
+    }
+
+    if x < 10_000_000 {
+        return roundUp(x, divisor: 10_000)
+    }
+
+    if x < 100_000_000 {
+        return roundUp(x, divisor: 100_000)
+    }
+
+    if x < 1_000_000_000 {
+        return roundUp(x, divisor: 1_000_000)
+    }
+
+    return roundUp(x, divisor: 10_000_000)
+}
+
+
+private func encodeExt(value: Int64, ext: String) -> String {
+    return "\(value)\(ext)"
+}
+
+private func encodeSeconds(_ seconds: Int64) -> String {
+    let seconds = roundUpToThreeSigFigs(seconds)
+    if (seconds % 3600 == 0) {
+        return "\(seconds / 3_600)H"
+    } else if (seconds % 60 == 0) {
+        return "\(seconds / 60)M"
+    } else {
+        return "\(seconds)S"
+    }
+}
+
+private let GPR_MS_PER_SEC: Int64 = 1000
+
+func encodeMillis(x: Int64) -> String {
+    let x = roundUpToThreeSigFigs(x)
+    if (x < GPR_MS_PER_SEC) {
+        return encodeExt(value: x, ext: "m")
+    } else {
+        if (x % GPR_MS_PER_SEC == 0) {
+            return encodeSeconds(x / GPR_MS_PER_SEC)
+        } else {
+            return encodeExt(value: x, ext: "m")
+        }
+    }
+}
+
+
+
+func encodeTimeout(timeoutInMillis: Int64) -> String {
+    let maxTimeoutInMillis: Int64 = 99999999000
+    if timeoutInMillis <= 0 {
+        return "1n"
+    } else if timeoutInMillis < 1_000 * 1_000 {
+        return encodeMillis(x: timeoutInMillis)
+    } else if timeoutInMillis >= maxTimeoutInMillis {
+        return "99999999S"
+    } else {
+        return encodeSeconds(timeoutInMillis / 1_000 + (timeoutInMillis % 1_000 != 0 ? 1 : 0))
+    }
 }
